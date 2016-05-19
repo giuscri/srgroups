@@ -1,0 +1,544 @@
+<!doctype html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+		<title>ASLR-Guard</title>
+
+		<link rel="stylesheet" href="css/reveal.css">
+		<link rel="stylesheet" href="css/theme/black.css">
+
+		<!-- Theme used for syntax highlighting of code -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- Printing and PDF exports -->
+		<script>
+			var link = document.createElement( 'link' );
+			link.rel = 'stylesheet';
+			link.type = 'text/css';
+			link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
+			document.getElementsByTagName( 'head' )[0].appendChild( link );
+		</script>
+	</head>
+	<body>
+		<div class="reveal">
+			<div class="slides">
+
+				<section>
+					<section data-markdown>
+					# ASLR-Guard
+
+					Presented @ Computer and Communications Security 2015
+					</section>
+
+					<section data-markdown>
+					A general prerequisite for code reuse attack
+					is to locate the code you want to reuse.
+
+					By randomizing the location of code
+					at each execution, it's harder for
+					an attacker to precompute a payload.
+
+					Theorically, that's impossible indeed.
+					</section>
+
+					<section data-markdown>
+					What's been shown by research in the last
+					year is that attackers can ignore randomizations
+					sometimes.
+					</section>
+
+					<section data-markdown>
+					Say you have some vulnerability
+					that allows attackers to read data
+					from the stack.
+
+					Assuming the C calling convention
+					is used, the return address of a procedure
+					is pushed onto the stack.
+
+					`[ ... | stored_rip | stored_rbp | ... ]`
+
+					`<<<<<<<<^~~~~~~~~~<<<<<<<<<<<<<<<<<<<<<`
+					</section>
+
+					<section data-markdown>
+					Given the attacker knows `WHERE` the procedure
+					is supposed to return, if the read from the
+					stack is successful, attacker now knows the
+					location of `WHERE` in memory.
+
+					This potentially gives the attacker
+					a very evocative clue about the base address
+					of the module that contains the `WHERE` instruction.
+
+						base_address = &WHERE - offset_of_WHERE
+					</section>
+
+					<section data-markdown>
+					Hacker's jargon gives this kind
+					of vulnerability the name *information leak*.
+
+					That is, attackers obtain code location
+					infos **after** ASLR has done its job.
+
+					While this could be technically
+					challenging for mortals, it's exploitable in theory
+					-- and kickass CTFers did it for real.
+					</section>
+
+					<section data-markdown>
+					The paper tries to come up with
+					a solution for this kind of vulnerability
+					by instrumenting code to behave in a
+					more secure way.
+
+					Leak of return addresses are not
+					the only dangerous one.
+
+					Indeed, the paper tries to prevent
+					all the potential leak of *code locators*.
+					</section>
+
+					<section data-markdown>
+					As defined by the paper, **code locator**
+					is
+
+					> "... any pointer or data that can
+					be used to infer code addresses."
+					</section>
+
+					<section data-markdown>
+					*Generating* a code locator means
+					somehow *building* it, then storing
+					in a register. From that point on,
+					it might be saved in memory, *e.g.*
+					used in a variable assigment.
+
+					Lu *et al.* tried to categorize them all,
+					then came up with different strategies
+					to protect them.
+					</section>
+
+					<section data-markdown>
+					4 different categories have been defined,
+					based on the program's life cycle.
+
+					+ **load-time**
+					+ **runtime**
+					+ **OS-injected** 
+					+ **correlated**
+					</section>
+
+					<section data-markdown>
+					The *correlated* category
+					represents any information	about data position in memory,
+					where data is at a known and fixed offset from code.
+
+					Assuming the attacker know how to correctly perform addition/subtraction,
+					those information are dangerous too if leaked (from a defender perspective).
+					</section>
+
+					<section data-markdown>
+					A `python` tool (~1K lines) has been developed
+					to analyse memory *before* and *after* specified hooks.
+
+					For example, *before* and *after* the syscall 42: if while
+					analysing memory, some `8byte` chunk,
+					*after* the syscall, is found pointing to a byte
+					inside an executable segment of memory, we now know syscall 42
+					generates a code locator and injects it somehow in memory.
+					</section>
+
+					<section data-markdown>
+					This memory analysis tool has been used
+					both to understand how the kernel injects
+					code locators in the process' address space,
+					and to validate the *static* deductions
+					on how the rest of code locators are generated
+					(made by reading the source code of
+					`ld`, `as`, `cc` and `ld.so`).
+					</section>
+
+					<section data-markdown>
+					## How to catch code locators for different categories?
+					</section>
+
+					<section data-markdown>
+					## Load-time 'locators
+
+					Any code locators generated at load-time
+					relies on relocation information, assuming
+					ASLR is active.
+
+					Indeed, code locators generated at load-time
+					depends on a state known at load-time only.
+					
+					That is, before being used they must be relocated.
+
+					Via hooking the loader's relocation procedure,
+					any code locator generated at load time could
+					be checked and properly protected.
+					</section>
+
+					<section data-markdown>
+					## Runtime 'locators
+					Any `call`, which will `mov`e `%rip`
+					onto the stack, generates a code locator
+					(leaking position of code *to* the stack).
+					</section>
+
+					<section data-markdown>
+					## Runtime 'locators
+					`lea {offset}(%rip), ...`
+					
+					possibly
+					used when loading a pointer with the
+					value of a local function
+
+						def fn():
+							def g(): pass
+							ptr = g
+					</section>
+
+					<section data-markdown>
+					## Runtime 'locators
+					`{set,long}jmp`, a 
+					code locator is pushed onto
+					the stack (by `set`), then dereferenced
+					(by `long`).
+					
+					(`goto`?, `try/catch`?)
+					</section>
+
+					<section data-markdown>
+					## OS-injected
+
+					Apparently, the program entry point
+					is pushed onto the stack by the kernel.
+
+					Also, the entire *environment*
+					(`%eip` included)
+					is saved in the process address space,
+					for signal handling.
+					</section>
+
+					<section data-markdown>
+					# How to protect each category?
+					</section>
+
+					<section data-markdown>
+					## Correlated
+
+					When code and data sections
+					are mapped in the same segment,
+					there might be logic, in code,
+					that access data using an offset
+					(possibly from the current location of `%eip`).
+
+					That means that even leaks about
+					data position in memory might be
+					dangerous.
+
+					Randomizing sections makes
+					code and data sections offset
+					random, and known at load-time only.
+					</section>
+
+					<section data-markdown>
+					## OS-injected
+
+					Use two stacks.
+
+					One, whose top is stored
+					as usual in `%rsp`, the *AG-Stack*.
+
+					On `%r15`, the top of a second
+					stack is kept.
+
+					The AG-Stack is used for storing
+					sensitive information (*return addresses*)
+					and other data pushed by the kernel after
+					a syscall or a signal handled.
+
+					The other, unsafe, stack is used
+					for any general program data.
+					</section>
+
+					<section data-markdown>
+					Since the AG-Stack never contains
+					program data (parameters or vars),
+					there won't be code referencing it.
+
+					Its location is randomized too,
+					and never leave `%rsp`.
+					</section>
+
+					<section data-markdown>
+					## Runtime
+
+					Return addresses are stored in the AG-Stack.
+
+					Code locators generated by *GetPC*
+					or *GetRet* set of instructions are
+					**encrypted** instead.
+					</section>
+
+					<section data-markdown>
+					# Encryption of code locators.
+					</section>
+
+					<section data-markdown>
+					When a code locator is hard to keep
+					isolate in memory, but instead
+					it's used in unsafe memory, it is
+					*somehow* encrypted.
+					</section>
+
+					<section data-markdown>
+					This way, even if the attacker
+					succeed to read unsafe memory, it
+					will only read the encrypted version
+					of the code locator.
+					</section>
+
+					<section data-markdown>
+					## How.
+
+					A table is used: *AG-RandMap*.
+
+					Each entry is a 16byte chunk,
+					consisting of
+
+					`[ code locator ] [ ... 0 ... ] [ nonce ]`
+					</section>
+
+					<section data-markdown>
+					When a code locator needs to be encrypted,
+					a random nonce with 32bits of entropy
+					is generated.
+
+					The code locator and `b'0'*4` are prepended
+					to the nonce and inserted inside the AG-RandMap
+					table with an offset generated on the fly,
+					with 32bits of entropy too.
+
+					The encrypted code locator returned is
+					an 8bytes chunk consisting of
+
+					`[ random offset ] [ nonce ]`
+					</section>
+
+					<section data-markdown>
+					Whenever an encrypted code locator
+					is used, assuming it's stored
+					in `%rax` and the base address
+					of the AGRand-Map is in `%gs`,
+					it can be decrypted via
+
+						...
+						xor  %gs:8(%eax), %rax
+						call %gs:(%rax)
+						...
+
+					At the end of the decryption "*routine*",
+					`%rax` will contain the correct offset
+					to fetch the right code locator
+					only if the nonce was the same generated
+					during the encryption routine.
+					</section>
+
+					<section data-markdown>
+					The rest of code locators are stored
+					in plaintext in an isolated data structure
+					called the *safe vault*, that's guaranteed
+					to remain isolated by randomizing it's
+					base address and never saving it in memory
+					but handling any kind of reference to it
+					in registers only.
+					</section>
+
+					<section data-markdown>
+					## How is this accomplished?
+
+					Via a static toolchain and a dynamic loader.
+
+					That means, for binaries to be hardened
+					by that technique, the source code of the program
+					as of all the loaded modules must be
+					available.
+					</section>
+
+					<section data-markdown>
+					### Compiler
+					+ Reserve the `%r15` register
+					for the regular/unsafe stack.
+
+					+ Prefer `mov` instructions
+					to `push/pop`, `enter/leave`
+					-- to avoid `%rsp` modification.
+					</section>
+
+					<section data-markdown>
+					### Assembler
+					+ Append the encryption routine
+					right after a code locator is
+					generated by one (or a set of)
+					instruction(s).
+
+					+ Prepend the decryption routine
+					when dereferencing encrypted
+					code locators.
+					</section>
+
+					<section data-markdown>
+					### Static linker
+					+ Strip encryption/decryption
+					routines when addresses are
+					generated to access data.
+					Indeed, the assembler appends the encryption
+					routine in a conservative way. Now,
+					the linker knows what's supposed to be
+					code and what data; thus it can strip
+					the routines not needed.
+					</section>
+
+					<section data-markdown>
+					### Dynamic loader
+
+					+ Inizialize the stack(s!), allocate
+					space for the random mapping table,
+					isolate it (i.e. randomize its base
+					address, store it in the `%gs` segment register).
+
+					+ Encrypt all code locators generated
+					at load-time, hooking the relocation routine.
+					</section>
+
+					<section data-markdown>
+					## How secure 
+					</section>
+
+					<section data-markdown>
+					From a theoritical point of view,
+					if the target is a binary compiled
+					with the ASLR-Guard toolchain, and
+					all the loaded modules are as well,
+					what is the chance of success for
+					an attacker to hijack the control
+					flow to an address `x`?
+
+					She could either rewrite the
+					content of the safe valut -- but
+					she needs to locate it first, with
+					a chance of `2**-28`,
+
+					or she could rewrite an encrypted
+					code locator -- assuming at least
+					one entry for `x` exists in the random
+					mapping table; yet, she needs to find
+					the correct nonce, with a chance
+					of success `<= 2**-32`.
+					</section>
+
+					<section data-markdown>
+					In both cases, the chance of success
+					is `<= 2**-28`.
+
+					That means, an ASLR-Guard instrumented
+					binary should provide at least the same
+					security *plain* ASLR provides.
+					</section>
+
+					<section data-markdown>
+					Empirically, the memory analysis tool
+					is used one more time, hooking
+					program's entry/exit point and
+					right after every syscall. The whole
+					memory is dumped there.
+
+					The entire software suite of the
+					SPEC benchmark 2006 is used, with
+					the following results
+
+					+ No single *plaintext* code locator
+					is left in unsafe memory.
+
+					+ Encrypted code locators are less than `10%`
+					for most programs; for many of them `~20`.
+					</section>
+
+					<section data-markdown>
+					### `nginx v1.4.0`
+
+					Since a spawned nginx worker, if it crashes,
+					won't cause the entire server to crash, via
+					exploiting a buffer overflow vulnerability,
+					the return address could be repeatdly
+					rewritten, until the correct one is found,
+					hence obtaining a code locator *after*
+					ASLRandomization.
+
+					`BROP` was a tool that automatically
+					exploited `nginx v1.4.0`.
+
+					Via rebuilding `nginx` using
+					the ASLR-Guard toolchain, `BROP`
+					fails to exploit nginx. Indeed,
+					the return address isn't even present
+					on the stack BROP is reading!
+					</section>
+
+					<section data-markdown>
+					### Performance
+
+					Taking the average of 10executions
+					for the software used by the SPEC
+					benchmark, an overhead of less than `1%`
+					has been registered as far as time
+					is concerned.
+
+					Building the software takes longer too,
+					with an overhead of `~6%`. While loading
+					is still very fast, `~1μs`.
+
+					File size grows by `6%` on average,
+					while memory size is `~2MB` larger
+					as for the structures kept
+					in memory that are not loaded
+					for the *not* hardened binary.
+					</section>
+
+					<section data-markdown>
+					`exit(-1);`
+					</section>
+				</section>
+
+			</div>
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.js"></script>
+
+		<script>
+			// More info https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				history: true,
+
+				// More info https://github.com/hakimel/reveal.js#dependencies
+				dependencies: [
+					{ src: 'plugin/markdown/marked.js' },
+					{ src: 'plugin/markdown/markdown.js' },
+					{ src: 'plugin/notes/notes.js', async: true },
+					{ src: 'plugin/highlight/highlight.js', async: true, callback: function() { hljs.initHighlightingOnLoad(); } }
+				],
+
+
+				// Customized options
+				transition: 'slide-out',
+				transitionSpeed: 'fast'
+			});
+		</script>
+	</body>
+</html>
